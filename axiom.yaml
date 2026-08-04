@@ -1,0 +1,93 @@
+name: christiangeorgelucas/lab-result-tools
+version: 0.1.0
+language: go
+description: >-
+  Parses messy lab-result and reference-range strings into typed values,
+  compares a result against a reference range, converts between lab
+  concentration units, and validates/batch-evaluates full result records.
+  This package is STRING/NUMERIC normalization and RANGE COMPARISON against
+  reference ranges the CALLER supplies — it is NOT a clinical decision
+  system. It ships NO built-in medical reference ranges, NO analyte
+  molar-mass table, and NO clinical thresholds of any kind, and none of its
+  outputs are medical advice: every threshold, range, and molar mass it uses
+  is an explicit caller-supplied input. Censored values ("<0.5", ">1000")
+  are modeled explicitly rather than coerced to their threshold; comparisons
+  that cannot be soundly decided (a qualitative value against a numeric
+  range, a censored value straddling a boundary, mismatched units) return an
+  explicit "indeterminate" outcome instead of a guessed pass/fail. Range
+  boundaries use documented, tested inclusive/exclusive semantics at both
+  edges. General-purpose physical-unit conversion is intentionally out of
+  scope — compose with christiangeorgelucas/unit-tools' Convert node for
+  that; this package's own NormalizeResultUnits node covers only the
+  mass<->molar lab-concentration conversion unit-tools cannot do, and always
+  requires the analyte's molar mass as an explicit input rather than
+  inventing or looking one up.
+license: MIT
+author: Christian George Lucas
+tags:
+  - healthcare
+  - lab-results
+  - clinical-data
+  - reference-range
+  - parsing
+  - normalization
+  - validation
+nodes:
+    - name: ParseResultValue
+      description: >-
+        Parse a messy lab-result string — "<0.5", ">1000", "5.2 mg/dL",
+        "NEGATIVE", "1,234.5", "3.4-3.9" — into a typed value: numeric,
+        censored_low, censored_high, range, or qualitative. A censored value
+        ("<0.5") is modeled explicitly as a threshold with a direction, never
+        silently coerced to the number it names.
+      input: ParseResultValueRequest
+      output: ParsedValue
+    - name: ParseReferenceRange
+      description: >-
+        Parse a reference-range string — "3.5-5.0", "<200", ">=40",
+        "70 - 110 mg/dL" — into explicit low/high bounds with their own
+        inclusive/exclusive flags, so "exactly at the bound" has a
+        documented, testable answer instead of an assumed one. A reversed
+        range (low > high) is rejected as a structured error, not silently
+        accepted.
+      input: ParseReferenceRangeRequest
+      output: ParsedRange
+    - name: EvaluateResult
+      description: >-
+        Compare a parsed result value against a parsed reference range (and
+        optional tighter critical range) and return low/normal/high/
+        critical_low/critical_high — or "indeterminate" when the comparison
+        cannot be soundly decided (a qualitative value against a numeric
+        range, a censored value whose possible interval straddles a
+        boundary, or mismatched units). Never guesses a pass/fail.
+      input: EvaluateResultRequest
+      output: EvaluationResult
+    - name: NormalizeResultUnits
+      description: >-
+        Convert a lab concentration value between mass units (g, mg, µg, ng,
+        pg per L/dL/mL/µL) and/or molar units (mol, mmol, µmol, nmol, pmol
+        per L/dL/mL/µL). A mass<->molar conversion (e.g. mg/dL to mmol/L)
+        REQUIRES the analyte's molar mass in g/mol as an explicit input —
+        this node never assumes or looks one up. Out of scope: any unit
+        shape outside lab mass/molar concentration (temperature, length,
+        dimensionless ratios); use christiangeorgelucas/unit-tools' Convert
+        node for those instead.
+      input: NormalizeResultUnitsRequest
+      output: NormalizedValue
+    - name: ValidateResultRecord
+      description: >-
+        Validate one full lab result record (test name, value, unit,
+        reference range, collection timestamp) and return a field-level
+        list of errors/warnings plus the record's already-parsed value and
+        range, so a caller gets both the verdict and the typed data in one
+        call.
+      input: ValidateResultRecordRequest
+      output: ValidationResult
+    - name: BatchEvaluate
+      description: >-
+        Validate and evaluate many lab result records in one call, each
+        against its own reference range, returning a per-record flag plus
+        aggregate counts (normal/low/high/critical/indeterminate/invalid) —
+        the shape an agent processing a whole result panel actually needs.
+      input: BatchEvaluateRequest
+      output: BatchEvaluateResult

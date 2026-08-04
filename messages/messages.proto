@@ -1,0 +1,382 @@
+// This file defines the data contracts (messages) for your Axiom package.
+// Every node's --input and --output refers to a message defined here.
+//
+// Run `axiom create message <Name>` to scaffold a new message below.
+// Run `axiom generate` to compile these definitions into language bindings in gen/.
+//
+// DOCUMENTATION
+//   Comments written directly above a message or field declaration are extracted
+//   automatically at publish time and shown in the Axiom registry as documentation.
+//   Write your descriptions there — no separate doc files needed.
+//
+//   Leading comment  (no blank line before the declaration) → registry description ✓
+//   Detached comment (blank line before the declaration)    → ignored by registry  ✗
+//
+// This file is yours to edit. Axiom only appends new message blocks — it never
+// overwrites or removes content you have written.
+//
+// ============================================================================
+// SCOPE AND GUARDRAIL (read this before using any node in this package)
+//
+// This package performs STRING/NUMERIC NORMALIZATION and RANGE COMPARISON
+// against reference ranges and critical ranges that the CALLER supplies. It
+// is NOT a clinical decision system: it ships NO built-in medical reference
+// ranges, NO analyte molar-mass table, and NO clinical thresholds of any
+// kind, and none of its outputs are medical advice. Every threshold, range,
+// and molar mass used anywhere in this package is an explicit input field —
+// if a computation would require inventing or assuming a clinical value,
+// the node instead returns a structured error or an `indeterminate` verdict
+// rather than guessing. See EvaluateResult.flag and
+// NormalizeResultUnits.molar_mass_g_per_mol below for the two places this
+// matters most.
+//
+// UNIT CONVENTIONS. This package intentionally covers only lab RESULT-VALUE
+// concentration units (a mass or molar amount per volume, e.g. "mg/dL",
+// "mmol/L") — the shape lab instruments and LIS/HIS systems actually emit.
+// For general-purpose physical-unit conversion (temperature, length, mass
+// without a volume denominator, arbitrary dimensional analysis), compose
+// with christiangeorgelucas/unit-tools' Convert node instead of asking this
+// package to do it — NormalizeResultUnits deliberately does not reimplement
+// that surface; see its own comment for the exact boundary.
+//
+// UNICODE. Every free-text unit expression this package accepts (in a
+// parsed value/range's `unit` field, and in NormalizeResultUnits' unit
+// fields) has U+00B5 (MICRO SIGN, "µ") canonicalized to U+03BC (GREEK SMALL
+// LETTER MU, "μ") before use, so "µg/L" and "μg/L" are treated as the same
+// unit even though they arrive as different codepoints. This is a narrow,
+// targeted substitution — not a general Unicode normalization pass — scoped
+// to the one ambiguity that matters for lab unit strings. The canonical
+// spelling this package emits always uses U+03BC.
+// ============================================================================
+
+syntax = "proto3";
+
+package christiangeorgelucas.lab_result_tools;
+
+option go_package = ".;gen";
+
+// A structured, deterministic failure. Unset on success. Every node in this
+// package returns this instead of guessing at malformed input.
+message Error {
+  // Stable machine-readable code, one of:
+  //   INVALID_INPUT      — the input text/record is empty, malformed, or
+  //                        outside what this node parses (see each node's
+  //                        own doc for its accepted grammar).
+  //   RANGE_INVALID      — a parsed reference range has low > high, or a
+  //                        boundary operator is contradictory.
+  //   UNIT_MISMATCH      — two inputs (e.g. a value and a range) carry
+  //                        different, non-empty units that were not
+  //                        reconciled before the operation.
+  //   UNSUPPORTED_UNIT   — a unit expression is well-formed but outside the
+  //                        mass/molar-concentration vocabulary this package
+  //                        converts (e.g. "IU/mL", which has no fixed
+  //                        conversion factor).
+  //   MOLAR_MASS_REQUIRED — a mass<->molar unit conversion was requested
+  //                        without the required molar_mass_g_per_mol input.
+  //   INTERNAL           — this package itself faulted; the caller's input
+  //                        may be perfectly valid.
+  string code = 1;
+  // Human-readable detail naming exactly what was rejected and why.
+  string message = 2;
+}
+
+// A single lab result value, parsed from a messy source string into one of
+// five typed shapes selected by `kind`:
+//   "numeric"       — an ordinary measured number; `value` is set.
+//   "censored_low"  — reported as "<T" (e.g. "<0.5"): the true value is only
+//                      known to be strictly less than the threshold `value`.
+//                      NEVER coerced to the threshold itself — see
+//                      EvaluateResult for how comparisons against a range
+//                      are (and are not) resolved for a censored value.
+//   "censored_high" — reported as ">T" (e.g. ">1000"): the true value is
+//                      only known to be strictly greater than `value`.
+//   "range"         — the result itself was reported as an interval (e.g.
+//                      "3.4-3.9"); `low`/`high` are set, inclusive of both
+//                      ends.
+//   "qualitative"   — free text with no numeric reading (e.g. "NEGATIVE",
+//                      "POSITIVE", "TRACE", "REACTIVE"); `qualitative_text`
+//                      is set to the trimmed, upper-cased original text.
+message ParsedValue {
+  // One of "numeric", "censored_low", "censored_high", "range",
+  // "qualitative". Never empty on a successful parse.
+  string kind = 1;
+  // The measured number (kind "numeric") or the reported threshold (kind
+  // "censored_low"/"censored_high", where it is a bound, not the value
+  // itself). Absent for "range" and "qualitative".
+  optional double value = 2;
+  // Inclusive lower bound of a reported value range. Only set for kind
+  // "range".
+  optional double low = 3;
+  // Inclusive upper bound of a reported value range. Only set for kind
+  // "range".
+  optional double high = 4;
+  // The trimmed, upper-cased original text for kind "qualitative" (e.g.
+  // "NEGATIVE"). Empty for every other kind.
+  string qualitative_text = 5;
+  // The unit expression found after the numeric/censored/range portion of
+  // the text, with U+00B5 canonicalized to U+03BC (e.g. "mg/dL"). Empty if no unit was present
+  // in the source text, or for kind "qualitative".
+  string unit = 6;
+  // The original, unmodified input text, kept for audit/debugging.
+  string original = 7;
+  // Set when parsing failed; every other field is then zero-valued and MUST
+  // NOT be read as a real result.
+  Error error = 8;
+}
+
+// Free text to be parsed by ParseResultValue, e.g. "<0.5", ">1000",
+// "5.2 mg/dL", "NEGATIVE", "1,234.5", "3.4-3.9".
+message ParseResultValueRequest {
+  // The raw result string as it arrived from the source system. Leading and
+  // trailing whitespace is ignored. Comma thousands-separators are accepted
+  // only in the strict "###,###.##"-style grouping; any other placement is
+  // rejected as INVALID_INPUT rather than guessed at.
+  string text = 1;
+}
+
+// A reference range parsed from a string such as "3.5-5.0", "<200",
+// ">=40", or "70 - 110 mg/dL", with explicit inclusive/exclusive boundary
+// semantics: a bare "low-high" range is inclusive on BOTH ends; "<"/">" are
+// EXCLUSIVE of the stated bound; "<="/">=" are INCLUSIVE of it.
+message ParsedRange {
+  // Inclusive-or-exclusive-per-`low_inclusive` lower bound. Absent if the
+  // range has no lower bound (e.g. parsed from "<200").
+  optional double low = 1;
+  // Inclusive-or-exclusive-per-`high_inclusive` upper bound. Absent if the
+  // range has no upper bound (e.g. parsed from ">=40").
+  optional double high = 2;
+  // True if `low` (when present) is itself considered within range. Ignored
+  // if `low` is absent.
+  bool low_inclusive = 3;
+  // True if `high` (when present) is itself considered within range.
+  // Ignored if `high` is absent.
+  bool high_inclusive = 4;
+  // The unit expression found after the numeric portion of the text,
+  // with U+00B5 canonicalized to U+03BC. Empty if no unit was present.
+  string unit = 5;
+  // The original, unmodified input text, kept for audit/debugging.
+  string original = 6;
+  // Set when parsing failed (including a reversed low > high range); every
+  // other field is then zero-valued and MUST NOT be read as a real range.
+  Error error = 7;
+}
+
+// Free text to be parsed by ParseReferenceRange.
+message ParseReferenceRangeRequest {
+  // The raw reference-range string as it arrived from the source system.
+  string text = 1;
+}
+
+// A parsed value plus a parsed reference range (and optionally a tighter
+// critical/panic range) to compare it against.
+message EvaluateResultRequest {
+  // The parsed result value to evaluate. Must not itself carry a set
+  // `error` — EvaluateResult refuses such input rather than guessing.
+  ParsedValue value = 1;
+  // The normal reference range to compare against. Must not itself carry a
+  // set `error`.
+  ParsedRange range = 2;
+  // An optional tighter range identifying critical/panic values (e.g. a
+  // critical-low threshold below the normal range's low bound). When
+  // present and the value falls outside it, the flag is "critical_low" or
+  // "critical_high" instead of the plain "low"/"high". Caller-supplied —
+  // this package never invents a critical threshold.
+  optional ParsedRange critical_range = 3;
+}
+
+// The outcome of comparing a parsed value against a parsed reference range.
+message EvaluationResult {
+  // One of "low", "normal", "high", "critical_low", "critical_high",
+  // "indeterminate". "indeterminate" is returned — never a guessed
+  // pass/fail — whenever the comparison cannot be soundly decided: a
+  // qualitative value against a numeric range, a censored value whose
+  // possible range straddles a boundary, or a unit mismatch between value
+  // and range.
+  string flag = 1;
+  // Signed distance from the violated bound (negative below low, positive
+  // above high), in the shared unit. Only set when a bound was actually
+  // violated (`flag` is "low", "high", "critical_low", or "critical_high")
+  // AND the value is a single numeric point (kind "numeric"); absent for
+  // "normal" (no bound was violated), "indeterminate", and for
+  // interval-valued kinds (censored/range), where no single distance is
+  // well-defined.
+  optional double delta_from_bound = 2;
+  // True if the value is within the (non-critical) reference range, false
+  // if it is outside. Absent when `flag` is "indeterminate" — this is the
+  // field that most directly encodes "never guess": a caller must check
+  // presence before branching on it.
+  optional bool within = 3;
+  // Human-readable explanation, always set. On a determinable outcome this
+  // states which bound was compared and how; on "indeterminate" it states
+  // exactly why the comparison could not be decided.
+  string reason = 4;
+  // Set when evaluation could not run at all (e.g. `value` or `range` in
+  // the request already carried an error). Distinct from an "indeterminate"
+  // flag, which IS a successful evaluation outcome.
+  Error error = 5;
+}
+
+// A value and a target unit to convert it to. Handles ONLY lab
+// concentration units of the form "<SI prefix>g/<volume>" (mass) or
+// "<SI prefix>mol/<volume>" (molar), e.g. "mg/dL", "umol/L", "ng/mL".
+// Supported mass SI prefixes: none(g), k, m, u/µ, n, p. Supported molar SI
+// prefixes: none(mol), m, u/µ, n, p. Supported volume units: L, dL, cL, mL,
+// uL/µL. Any other unit shape (temperature, length, a bare mass with no
+// volume, an arbitrary Pint-style expression) is out of scope for this
+// node — use christiangeorgelucas/unit-tools' Convert node for those
+// instead; this node exists specifically for the mass<->molar concentration
+// conversion unit-tools cannot do, because that conversion is
+// analyte-specific (it needs a molar mass) and unit-tools has no notion of
+// "analyte".
+message NormalizeResultUnitsRequest {
+  // The magnitude to convert.
+  double value = 1;
+  // The unit `value` is currently expressed in.
+  string from_unit = 2;
+  // The unit to convert `value` into.
+  string to_unit = 3;
+  // The analyte's molar mass in grams per mole. REQUIRED if and only if
+  // `from_unit` and `to_unit` are on different sides of the mass/molar
+  // divide (e.g. mg/dL -> mmol/L); the node never assumes or looks up a
+  // molar mass on the caller's behalf — see MOLAR_MASS_REQUIRED in Error.
+  // Ignored (may be omitted) for a same-kind conversion (mass->mass or
+  // molar->molar).
+  optional double molar_mass_g_per_mol = 4;
+}
+
+// The result of a unit conversion.
+message NormalizedValue {
+  // `value` converted into `to_unit`. Zero and meaningless if `error` is
+  // set.
+  double value = 1;
+  // Echoes the request's `to_unit`, with U+00B5 canonicalized to U+03BC, so the result is
+  // self-describing.
+  string unit = 2;
+  // Set when the conversion could not be performed.
+  Error error = 3;
+}
+
+// One lab result as reported by a source system — the unparsed, "as
+// received" shape that ValidateResultRecord and BatchEvaluate accept.
+message LabResultRecord {
+  // The test/analyte name as reported, e.g. "Glucose", "TSH". Free text;
+  // this package does not validate it against any test-name vocabulary.
+  string test_name = 1;
+  // The raw result string, in any form ParseResultValue accepts (e.g.
+  // "5.2", "<0.5", "NEGATIVE").
+  string value_text = 2;
+  // The unit the result was reported in, if separate from `value_text`
+  // (some source systems report the unit as its own field rather than
+  // inline in the value string). May be empty.
+  string unit = 3;
+  // The raw reference-range string, in any form ParseReferenceRange
+  // accepts (e.g. "3.5-5.0").
+  string reference_range_text = 4;
+  // When the specimen was collected, as an RFC3339 timestamp string (e.g.
+  // "2026-08-03T14:30:00Z"). May be empty (flagged as a warning, not an
+  // error — a missing collection time does not itself invalidate a
+  // result); if non-empty it must be valid RFC3339 or it is flagged as an
+  // error.
+  string collected_at = 5;
+}
+
+// A field-level problem found while validating a LabResultRecord.
+message FieldIssue {
+  // The LabResultRecord field this issue concerns, e.g. "value_text",
+  // "reference_range_text", "collected_at", "unit".
+  string field = 1;
+  // "error" (the record is not usable as-is) or "warning" (usable, but
+  // worth surfacing).
+  string severity = 2;
+  // Human-readable detail.
+  string message = 3;
+}
+
+// A LabResultRecord to validate.
+message ValidateResultRecordRequest {
+  // The record to check and parse.
+  LabResultRecord record = 1;
+}
+
+// The outcome of validating one LabResultRecord: a field-level issue list
+// plus the record's parsed value/range, so a caller does not have to
+// re-parse after validating.
+message ValidationResult {
+  // True if and only if `issues` contains no "error"-severity entry. A
+  // record can be `valid` while still carrying "warning" issues.
+  bool valid = 1;
+  // Every problem found, most specific first. Empty if the record is
+  // clean.
+  repeated FieldIssue issues = 2;
+  // `record.value_text` parsed via the same logic as ParseResultValue.
+  // Carries its own `error` if parsing failed (which also produces a
+  // matching entry in `issues`).
+  ParsedValue parsed_value = 3;
+  // `record.reference_range_text` parsed via the same logic as
+  // ParseReferenceRange. Carries its own `error` if parsing failed.
+  ParsedRange parsed_range = 4;
+}
+
+// One record in a BatchEvaluate call, carrying a caller-chosen identifier
+// so results can be correlated back to the caller's own record-keeping.
+message BatchRecord {
+  // Caller-supplied identifier (e.g. an accession or row number). Echoed
+  // back unchanged in the corresponding BatchResultItem; this package
+  // never generates or interprets it.
+  string record_id = 1;
+  // The record itself.
+  LabResultRecord record = 2;
+}
+
+// Many lab results to validate and evaluate in one call.
+message BatchEvaluateRequest {
+  // The records to process, in any order. Each is validated and (if valid)
+  // evaluated independently — one record's problems never affect another's
+  // result.
+  repeated BatchRecord records = 1;
+}
+
+// One record's outcome within a BatchEvaluate response.
+message BatchResultItem {
+  // Echoes the request's `record_id`.
+  string record_id = 1;
+  // The record's validation outcome (issues + parsed value/range).
+  ValidationResult validation = 2;
+  // The record's evaluation outcome. When `validation.valid` is false this
+  // is a flag of "indeterminate" with `reason` explaining that validation
+  // failed, rather than an evaluation attempted on unusable input.
+  EvaluationResult evaluation = 3;
+}
+
+// Aggregate counts across a BatchEvaluate call, for a caller that wants a
+// quick summary before inspecting individual items.
+message BatchSummary {
+  // Total records processed (== len(items) in the response).
+  int32 total = 1;
+  // Records that validated and evaluated to flag "normal".
+  int32 normal = 2;
+  // Records that validated and evaluated to flag "low".
+  int32 low = 3;
+  // Records that validated and evaluated to flag "high".
+  int32 high = 4;
+  // Records that validated and evaluated to flag "critical_low".
+  int32 critical_low = 5;
+  // Records that validated and evaluated to flag "critical_high".
+  int32 critical_high = 6;
+  // Records that validated but evaluated to flag "indeterminate" (a
+  // qualitative-vs-numeric-range, straddling-censored-value, or
+  // unit-mismatch case).
+  int32 indeterminate = 7;
+  // Records that FAILED VALIDATION and so were never evaluated (counted
+  // separately from "indeterminate", which is a successful-but-undecided
+  // evaluation of a VALID record).
+  int32 invalid = 8;
+}
+
+// The result of a BatchEvaluate call.
+message BatchEvaluateResult {
+  // Per-record outcome, in the same order as the request's `records`.
+  repeated BatchResultItem items = 1;
+  // Aggregate counts across `items`.
+  BatchSummary summary = 2;
+}
