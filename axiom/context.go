@@ -223,8 +223,8 @@ type telemetryCarrier interface{ AxiomTelemetry() Telemetry }
 
 type noopTelemetry struct{}
 
-func (noopTelemetry) AddEvent(string, ...Attr)          {}
-func (noopTelemetry) Counter(string, float64, ...Attr)  {}
+func (noopTelemetry) AddEvent(string, ...Attr)           {}
+func (noopTelemetry) Counter(string, float64, ...Attr)   {}
 func (noopTelemetry) Histogram(string, float64, ...Attr) {}
 
 // Telemetry is the tenant-safe node telemetry surface (ADR-073). All calls buffer
@@ -248,10 +248,10 @@ type Attr struct {
 }
 
 // String/Int/Float/Bool construct a typed telemetry Attr.
-func String(key, value string) Attr { return Attr{Key: key, Value: value} }
-func Int(key string, value int64) Attr { return Attr{Key: key, Value: value} }
+func String(key, value string) Attr        { return Attr{Key: key, Value: value} }
+func Int(key string, value int64) Attr     { return Attr{Key: key, Value: value} }
 func Float(key string, value float64) Attr { return Attr{Key: key, Value: value} }
-func Bool(key string, value bool) Attr { return Attr{Key: key, Value: value} }
+func Bool(key string, value bool) Attr     { return Attr{Key: key, Value: value} }
 
 // ADR-051 (2026-05-26): ax.Mutation().Flow().* — append-only mutation
 // of the running flow. Nodes declared with mutation_capable: true in

@@ -73,13 +73,24 @@ func parseResultValueText(original string) *gen.ParsedValue {
 		return &gen.ParsedValue{Kind: "range", Low: &lo, High: &hi, Unit: unit, Original: original}
 	}
 
-	// A plain numeric value, with an optional unit.
+	// A token that STARTS with a digit (or sign+digit) is an attempted
+	// number, even if it turns out malformed — it must never be silently
+	// recategorized as qualitative text, which would misreport "5,2 mg/dL"
+	// (a European decimal-comma value, or a bad thousands-grouping) as a
+	// deliberate non-numeric reading like "NEGATIVE" instead of the
+	// malformed number it actually is.
 	if numTok, unit, ok := splitNumberAndUnit(text); ok {
-		if v, err := parseDecimalToken(numTok); err == nil {
+		v, err := parseDecimalToken(numTok)
+		if err == nil {
 			return &gen.ParsedValue{Kind: "numeric", Value: &v, Unit: unit, Original: original}
+		}
+		return &gen.ParsedValue{
+			Original: original,
+			Error:    &gen.Error{Code: "INVALID_INPUT", Message: fmt.Sprintf("%q looks numeric but is not a supported number (only a plain decimal or strict \"1,234.5\"-style thousands-grouping is supported — a European decimal comma like \"5,2\" is NOT): %v", numTok, err)},
 		}
 	}
 
-	// Anything else is a qualitative reading (e.g. "NEGATIVE", "TRACE").
+	// Anything else — text that does not even start with a number — is a
+	// qualitative reading (e.g. "NEGATIVE", "TRACE").
 	return &gen.ParsedValue{Kind: "qualitative", QualitativeText: strings.ToUpper(text), Original: original}
 }

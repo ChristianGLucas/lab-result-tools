@@ -2,6 +2,7 @@ package nodes_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	gen "christiangeorgelucas/lab-result-tools/gen"
@@ -44,8 +45,10 @@ func TestParseResultValue_Table(t *testing.T) {
 		{name: "empty is invalid", text: "", wantErr: "INVALID_INPUT"},
 		{name: "whitespace only is invalid", text: "   ", wantErr: "INVALID_INPUT"},
 		{name: "reversed reported range is invalid", text: "3.9-3.4", wantErr: "RANGE_INVALID"},
-		{name: "malformed thousands grouping falls back to qualitative", text: "1,23.4", wantKind: "qualitative", wantQual: "1,23.4"},
+		{name: "malformed thousands grouping is invalid, not qualitative", text: "1,23.4", wantErr: "INVALID_INPUT"},
+		{name: "european decimal comma is invalid, not qualitative", text: "5,2 mg/dL", wantErr: "INVALID_INPUT"},
 		{name: "censored with no number is invalid", text: "<abc", wantErr: "INVALID_INPUT"},
+		{name: "all-digit overflow to non-finite is invalid, not qualitative", text: strings.Repeat("9", 400), wantErr: "INVALID_INPUT"},
 	}
 
 	for _, c := range cases {
