@@ -105,8 +105,8 @@ sign-up at **[axiomide.com](https://axiomide.com)**.
   this node never assumes or looks one up. Out of scope: any unit shape
   outside lab mass/molar concentration (temperature, length, dimensionless
   ratios) — compose with
-  [christiangeorgelucas/unit-tools](https://axiomide.com)' `Convert` node for
-  those instead.
+  [christiangeorgelucas/unit-tools](https://dev.axiomide.com/marketplace/christiangeorgelucas/unit-tools)'
+  `Convert` node for those instead.
 - **ValidateResultRecord** — validate one full lab result record (test name,
   value, unit, reference range, collection timestamp) and return a
   field-level list of errors/warnings plus the record's already-parsed value
